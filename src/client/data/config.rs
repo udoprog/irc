@@ -189,15 +189,15 @@ impl Config {
     }
 
     #[cfg(feature = "json")]
-    fn load_json<P: AsRef<Path>>(path: &P, data: &str) -> Result<Config> {
-        serde_json::from_str(&data[..]).map_err(|e| InvalidConfig {
+    fn load_json<P: AsRef<Path>>(path: P, data: &str) -> Result<Config> {
+        serde_json::from_str(data).map_err(|e| InvalidConfig {
             path: path.as_ref().to_string_lossy().into_owned(),
             cause: ConfigError::InvalidJson(e),
         })
     }
 
     #[cfg(not(feature = "json"))]
-    fn load_json<P: AsRef<Path>>(path: &P, _: &str) -> Result<Config> {
+    fn load_json<P: AsRef<Path>>(path: P, _: &str) -> Result<Config> {
         Err(InvalidConfig {
             path: path.as_ref().to_string_lossy().into_owned(),
             cause: ConfigError::ConfigFormatDisabled { format: "JSON" },
@@ -205,15 +205,15 @@ impl Config {
     }
 
     #[cfg(feature = "toml")]
-    fn load_toml<P: AsRef<Path>>(path: &P, data: &str) -> Result<Config> {
-        toml::from_str(&data[..]).map_err(|e| InvalidConfig {
+    fn load_toml<P: AsRef<Path>>(path: P, data: &str) -> Result<Config> {
+        toml::from_str(data).map_err(|e| InvalidConfig {
             path: path.as_ref().to_string_lossy().into_owned(),
             cause: ConfigError::InvalidToml(TomlError::Read(e)),
         })
     }
 
     #[cfg(not(feature = "toml"))]
-    fn load_toml<P: AsRef<Path>>(path: &P, _: &str) -> Result<Config> {
+    fn load_toml<P: AsRef<Path>>(path: P, _: &str) -> Result<Config> {
         Err(InvalidConfig {
             path: path.as_ref().to_string_lossy().into_owned(),
             cause: ConfigError::ConfigFormatDisabled { format: "TOML" },
@@ -221,15 +221,93 @@ impl Config {
     }
 
     #[cfg(feature = "yaml")]
-    fn load_yaml<P: AsRef<Path>>(path: &P, data: &str) -> Result<Config> {
-        serde_yaml::from_str(&data[..]).map_err(|e| InvalidConfig {
+    fn load_yaml<P: AsRef<Path>>(path: P, data: &str) -> Result<Config> {
+        serde_yaml::from_str(data).map_err(|e| InvalidConfig {
             path: path.as_ref().to_string_lossy().into_owned(),
             cause: ConfigError::InvalidYaml(e),
         })
     }
 
     #[cfg(not(feature = "yaml"))]
-    fn load_yaml<P: AsRef<Path>>(path: &P, _: &str) -> Result<Config> {
+    fn load_yaml<P: AsRef<Path>>(path: P, _: &str) -> Result<Config> {
+        Err(InvalidConfig {
+            path: path.as_ref().to_string_lossy().into_owned(),
+            cause: ConfigError::ConfigFormatDisabled { format: "YAML" },
+        })
+    }
+
+    /// Saves a configuration to the desired path. This will use the file extension to detect
+    /// which format to parse the file as (json, toml, or yaml). Using each format requires having
+    /// its respective crate feature enabled. Only json is available by default.
+    pub fn save<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let _ = self.path.take();
+        let mut file = File::create(&path)?;
+        let data = match path.as_ref().extension().and_then(|s| s.to_str()) {
+            Some("json") => self.save_json(&path)?,
+            Some("toml") => self.save_toml(&path)?,
+            Some("yaml") | Some("yml") => self.save_yaml(&path)?,
+            Some(ext) => {
+                return Err(InvalidConfig {
+                    path: path.as_ref().to_string_lossy().into_owned(),
+                    cause: ConfigError::UnknownConfigFormat {
+                        format: ext.to_owned(),
+                    },
+                })
+            }
+            None => {
+                return Err(InvalidConfig {
+                    path: path.as_ref().to_string_lossy().into_owned(),
+                    cause: ConfigError::MissingExtension,
+                })
+            }
+        };
+        file.write_all(data.as_bytes())?;
+        self.path = Some(path.as_ref().to_owned());
+        Ok(())
+    }
+
+    #[cfg(feature = "json")]
+    fn save_json<P: AsRef<Path>>(&self, path: &P) -> Result<String> {
+        serde_json::to_string(self).map_err(|e| InvalidConfig {
+            path: path.as_ref().to_string_lossy().into_owned(),
+            cause: ConfigError::InvalidJson(e),
+        })
+    }
+
+    #[cfg(not(feature = "json"))]
+    fn save_json<P: AsRef<Path>>(&self, path: &P) -> Result<String> {
+        Err(InvalidConfig {
+            path: path.as_ref().to_string_lossy().into_owned(),
+            cause: ConfigError::ConfigFormatDisabled { format: "JSON" },
+        })
+    }
+
+    #[cfg(feature = "toml")]
+    fn save_toml<P: AsRef<Path>>(&self, path: &P) -> Result<String> {
+        toml::to_string(self).map_err(|e| InvalidConfig {
+            path: path.as_ref().to_string_lossy().into_owned(),
+            cause: ConfigError::InvalidToml(TomlError::Write(e)),
+        })
+    }
+
+    #[cfg(not(feature = "toml"))]
+    fn save_toml<P: AsRef<Path>>(&self, path: &P) -> Result<String> {
+        Err(InvalidConfig {
+            path: path.as_ref().to_string_lossy().into_owned(),
+            cause: ConfigError::ConfigFormatDisabled { format: "TOML" },
+        })
+    }
+
+    #[cfg(feature = "yaml")]
+    fn save_yaml<P: AsRef<Path>>(&self, path: &P) -> Result<String> {
+        serde_yaml::to_string(self).map_err(|e| InvalidConfig {
+            path: path.as_ref().to_string_lossy().into_owned(),
+            cause: ConfigError::InvalidYaml(e),
+        })
+    }
+
+    #[cfg(not(feature = "yaml"))]
+    fn save_yaml<P: AsRef<Path>>(&self, path: &P) -> Result<String> {
         Err(InvalidConfig {
             path: path.as_ref().to_string_lossy().into_owned(),
             cause: ConfigError::ConfigFormatDisabled { format: "YAML" },
@@ -519,5 +597,38 @@ mod test {
         };
         assert_eq!(cfg.get_option("testing"), Some("test"));
         assert_eq!(cfg.get_option("not"), None);
+    }
+
+    #[test]
+    #[cfg(feature = "json")]
+    fn load_from_json() -> Result<(), failure::Error> {
+        const DATA: &str = include_str!("client_config.json");
+        assert_eq!(
+            Config::load_json("client_config.json", DATA)?.with_path("client_config.json"),
+            test_config().with_path("client_config.json")
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "toml")]
+    fn load_from_toml() -> Result<(), failure::Error> {
+        const DATA: &str = include_str!("client_config.toml");
+        assert_eq!(
+            Config::load_toml("client_config.toml", DATA)?.with_path("client_config.toml"),
+            test_config().with_path("client_config.toml")
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "yaml")]
+    fn load_from_yaml() -> Result<(), failure::Error> {
+        const DATA: &str = include_str!("client_config.yaml");
+        assert_eq!(
+            Config::load_yaml("client_config.yaml", DATA)?.with_path("client_config.yaml"),
+            test_config().with_path("client_config.yaml")
+        );
+        Ok(())
     }
 }
