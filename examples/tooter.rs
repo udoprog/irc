@@ -19,6 +19,6 @@ async fn main() -> irc::error::Result<()> {
 
     loop {
         let _ = interval.select_next_some().await;
-        sender.send_privmsg("#rust-spam", "AWOOOOOOOOOO")?;
+        sender.send_privmsg("#rust-spam", "AWOOOOOOOOOO").await?;
     }
 }
