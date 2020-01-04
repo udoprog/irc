@@ -1,5 +1,5 @@
 //! A module providing IRC connections for use by `IrcServer`s.
-use futures_channel::mpsc::UnboundedSender;
+use futures_channel::mpsc;
 use futures_util::{sink::Sink, stream::Stream};
 use native_tls::{Certificate, Identity, TlsConnector};
 use std::{
@@ -50,7 +50,7 @@ impl Connection {
     /// Creates a new `Connection` using the specified `Config`
     pub(crate) async fn new(
         config: &Config,
-        tx: UnboundedSender<Message>,
+        tx: mpsc::Sender<Message>,
     ) -> error::Result<Connection> {
         if config.use_mock_connection() {
             use encoding::{label::encoding_from_whatwg_label, EncoderTrap};

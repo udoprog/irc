@@ -15,7 +15,7 @@ async fn main() -> irc::error::Result<()> {
     };
 
     let mut client = Client::from_config(config).await?;
-    client.identify()?;
+    client.identify().await?;
 
     let mut stream = client.stream()?;
 
@@ -23,16 +23,18 @@ async fn main() -> irc::error::Result<()> {
         let message = stream.select_next_some().await?;
 
         if let Command::PRIVMSG(ref target, ref msg) = message.command {
-            if msg.starts_with(&*client.current_nickname()) {
+            if msg.starts_with(client.current_nickname().await) {
                 let tokens: Vec<_> = msg.split(' ').collect();
                 if tokens.len() > 2 {
                     let n = tokens[0].len() + tokens[1].len() + 2;
                     if let Ok(count) = tokens[1].parse::<u8>() {
                         for _ in 0..count {
-                            client.send_privmsg(
-                                message.response_target().unwrap_or(target),
-                                &msg[n..],
-                            )?;
+                            client
+                                .send_privmsg(
+                                    message.response_target().unwrap_or(target),
+                                    &msg[n..],
+                                )
+                                .await?;
                         }
                     }
                 }

@@ -13,7 +13,7 @@ async fn main() -> irc::error::Result<()> {
     };
 
     let mut client = Client::from_config(config).await?;
-    client.identify()?;
+    client.identify().await?;
 
     let mut stream = client.stream()?;
     let mut interval = tokio::time::interval(Duration::from_secs(10)).fuse();
@@ -24,7 +24,7 @@ async fn main() -> irc::error::Result<()> {
                 println!("{}", m?);
             }
             _ = interval.select_next_some() => {
-                client.send_privmsg("#rust-spam", "TWEET TWEET")?;
+                client.send_privmsg("#rust-spam", "TWEET TWEET").await?;
             }
         }
     }

@@ -9,8 +9,13 @@ use std::{
 };
 
 use chrono::prelude::*;
-use futures_channel::mpsc::UnboundedSender;
-use futures_util::{future::Future, ready, sink::Sink, stream::Stream};
+use futures_channel::mpsc;
+use futures_util::{
+    future::Future,
+    ready,
+    sink::Sink,
+    stream::{FuturesUnordered, Stream},
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::{self, Delay, Interval},
@@ -25,18 +30,20 @@ use crate::{
 
 /// Pinger-based futures helper.
 struct Pinger {
-    tx: UnboundedSender<Message>,
+    tx: mpsc::Sender<Message>,
     /// The amount of time to wait before timing out from no ping response.
     ping_timeout: Duration,
     /// The instant that the last ping was sent to the server.
     ping_deadline: Option<Delay>,
     /// The interval at which to send pings.
     ping_interval: Interval,
+    /// Queue of buffered, outgoing messages being sent.
+    outgoing: FuturesUnordered<Pin<Box<dyn Future<Output = error::Result<()>> + Send>>>,
 }
 
 impl Pinger {
     /// Construct a new pinger helper.
-    pub fn new(tx: UnboundedSender<Message>, config: &Config) -> Pinger {
+    pub fn new(tx: mpsc::Sender<Message>, config: &Config) -> Pinger {
         let ping_timeout = Duration::from_secs(u64::from(config.ping_timeout()));
 
         Self {
@@ -44,16 +51,17 @@ impl Pinger {
             ping_timeout,
             ping_deadline: None,
             ping_interval: time::interval(ping_timeout / 2),
+            outgoing: FuturesUnordered::new(),
         }
     }
 
     /// Handle an incoming message.
-    fn handle_message(&mut self, message: &Message) -> error::Result<()> {
+    fn handle_message(&mut self, message: &Message) {
         match message.command {
             // On receiving a `PING` message from the server, we automatically respond with
             // the appropriate `PONG` message to keep the connection alive for transport.
             Command::PING(ref data, _) => {
-                self.send_pong(data)?;
+                self.send_pong(data);
             }
             // Check `PONG` responses from the server. If it matches, we will update the
             // last instant that the pong was received. This will prevent timeout.
@@ -63,28 +71,30 @@ impl Pinger {
             }
             _ => (),
         }
+    }
 
-        Ok(())
+    fn send<M: Into<Message>>(&mut self, message: M) {
+        let mut tx = self.tx.clone();
+        let message = message.into();
+
+        self.outgoing.push(Box::pin(async move {
+            use futures_util::sink::SinkExt as _;
+            tx.send(message).await?;
+            Ok(())
+        }));
     }
 
     /// Send a pong.
-    fn send_pong(&mut self, data: &str) -> error::Result<()> {
-        self.tx
-            .unbounded_send(Command::PONG(data.to_owned(), None).into())?;
-        Ok(())
+    fn send_pong(&mut self, data: &str) {
+        self.send(Command::PONG(data.to_owned(), None));
     }
 
     /// Sends a ping via the transport.
-    fn send_ping(&mut self) -> error::Result<()> {
+    fn send_ping(&mut self) {
         log::trace!("Sending PING");
-
         // Creates new ping data using the local timestamp.
         let data = format!("{}", Local::now().timestamp());
-
-        self.tx
-            .unbounded_send(Command::PING(data.clone(), None).into())?;
-
-        Ok(())
+        self.send(Command::PING(data.clone(), None));
     }
 
     /// Set the ping deadline.
@@ -100,19 +110,30 @@ impl Future for Pinger {
     type Output = Result<(), error::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(ping_deadline) = self.as_mut().ping_deadline.as_mut() {
-            match Pin::new(ping_deadline).poll(cx) {
-                Poll::Ready(()) => return Poll::Ready(Err(error::Error::PingTimeout)),
-                Poll::Pending => (),
+        loop {
+            // flush outgoing messages.
+            while !self.outgoing.is_empty() {
+                match ready!(Pin::new(&mut self.outgoing).poll_next(cx)) {
+                    None => panic!("outgoing stream ended"),
+                    Some(result) => result?,
+                }
             }
-        }
 
-        if let Poll::Ready(_) = Pin::new(&mut self.as_mut().ping_interval).poll_next(cx) {
-            self.as_mut().send_ping()?;
-            self.as_mut().set_deadline();
-        }
+            if let Some(ping_deadline) = self.ping_deadline.as_mut() {
+                match Pin::new(ping_deadline).poll(cx) {
+                    Poll::Ready(()) => return Poll::Ready(Err(error::Error::PingTimeout)),
+                    Poll::Pending => (),
+                }
+            }
 
-        Poll::Pending
+            if let Poll::Ready(_) = Pin::new(&mut self.ping_interval).poll_next(cx) {
+                self.send_ping();
+                self.set_deadline();
+                continue;
+            }
+
+            return Poll::Pending;
+        }
     }
 }
 
@@ -136,7 +157,7 @@ where
     pub fn new(
         config: &Config,
         inner: Framed<T, IrcCodec>,
-        tx: UnboundedSender<Message>,
+        tx: mpsc::Sender<Message>,
     ) -> Transport<T> {
         let pinger = Some(Pinger::new(tx, config));
 
@@ -171,7 +192,8 @@ where
         };
 
         if let Some(pinger) = self.as_mut().pinger.as_mut() {
-            pinger.handle_message(&message)?;
+            pinger.handle_message(&message);
+            cx.waker().wake_by_ref();
         }
 
         Poll::Ready(Some(Ok(message)))

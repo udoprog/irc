@@ -12,16 +12,15 @@ async fn main() -> irc::error::Result<()> {
     };
 
     let mut client = Client::from_config(config).await?;
-    client.identify()?;
-
     let mut stream = client.stream()?;
+    client.identify().await?;
 
     loop {
         let message = stream.select_next_some().await?;
 
         if let Command::PRIVMSG(ref target, ref msg) = message.command {
             if msg.contains("pickles") {
-                client.send_privmsg(target, "Hi!").unwrap();
+                client.send_privmsg(target, "Hi!").await?;
             }
         }
     }

@@ -20,7 +20,7 @@ async fn main() -> irc::error::Result<()> {
 
         if let Command::PRIVMSG(ref target, ref msg) = message.command {
             if msg.contains("pickles") {
-                sender.send_privmsg(target, "Hi!")?;
+                sender.send_privmsg(target, "Hi!").await?;
             }
         }
     }
